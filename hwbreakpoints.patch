@@ -1,0 +1,615 @@
+diff --git a/lldb/tools/debugserver/source/DNBArch.h b/lldb/tools/debugserver/source/DNBArch.h
+index b5e2e25ef47..cc791b8d0eb 100644
+--- a/lldb/tools/debugserver/source/DNBArch.h
++++ b/lldb/tools/debugserver/source/DNBArch.h
+@@ -78,7 +78,8 @@ public:
+   virtual bool NotifyException(MachException::Data &exc) { return false; }
+   virtual uint32_t NumSupportedHardwareBreakpoints() { return 0; }
+   virtual uint32_t NumSupportedHardwareWatchpoints() { return 0; }
+-  virtual uint32_t EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size) {
++  virtual uint32_t EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size,
++                                            bool also_set_on_task) {
+     return INVALID_NUB_HW_INDEX;
+   }
+   virtual uint32_t EnableHardwareWatchpoint(nub_addr_t addr, nub_size_t size,
+@@ -86,7 +87,10 @@ public:
+                                             bool also_set_on_task) {
+     return INVALID_NUB_HW_INDEX;
+   }
+-  virtual bool DisableHardwareBreakpoint(uint32_t hw_index) { return false; }
++  virtual bool DisableHardwareBreakpoint(uint32_t hw_index,
++                                         bool also_set_on_task) { 
++    return false; 
++  }
+   virtual bool DisableHardwareWatchpoint(uint32_t hw_index,
+                                          bool also_set_on_task) {
+     return false;
+diff --git a/lldb/tools/debugserver/source/MacOSX/MachProcess.mm b/lldb/tools/debugserver/source/MacOSX/MachProcess.mm
+index 15a347778cf..c19cb76d590 100644
+--- a/lldb/tools/debugserver/source/MacOSX/MachProcess.mm
++++ b/lldb/tools/debugserver/source/MacOSX/MachProcess.mm
+@@ -1944,6 +1944,10 @@ static bool FBSAddEventDataToOptions(NSMutableDictionary *options,
+       if (bp->HardwarePreferred()) {
+         bp->SetHardwareIndex(m_thread_list.EnableHardwareBreakpoint(bp));
+         if (bp->IsHardware()) {
++          DNBLogThreadedIf(LOG_BREAKPOINTS, "MachProcess::"
++                                            "EnableBreakpoint ( addr = "
++                                            "0x%8.8llx ) : hw bpt SUCCESS.",
++                                            (uint64_t)addr);
+           bp->SetEnabled(true);
+           return true;
+         }
+diff --git a/lldb/tools/debugserver/source/MacOSX/MachThread.cpp b/lldb/tools/debugserver/source/MacOSX/MachThread.cpp
+index b51ea694922..84e2de1f4c4 100644
+--- a/lldb/tools/debugserver/source/MacOSX/MachThread.cpp
++++ b/lldb/tools/debugserver/source/MacOSX/MachThread.cpp
+@@ -534,9 +534,12 @@ bool MachThread::RestoreRegisterState(uint32_t save_id) {
+   return m_arch_up->RestoreRegisterState(save_id);
+ }
+ 
+-uint32_t MachThread::EnableHardwareBreakpoint(const DNBBreakpoint *bp) {
+-  if (bp != NULL && bp->IsBreakpoint())
+-    return m_arch_up->EnableHardwareBreakpoint(bp->Address(), bp->ByteSize());
++uint32_t MachThread::EnableHardwareBreakpoint(const DNBBreakpoint *bp,
++                                              bool also_set_on_task) {
++  if (bp != NULL && bp->IsBreakpoint()) {
++    return m_arch_up->EnableHardwareBreakpoint(bp->Address(), bp->ByteSize(),
++          also_set_on_task);
++  }
+   return INVALID_NUB_HW_INDEX;
+ }
+ 
+@@ -555,9 +558,12 @@ bool MachThread::RollbackTransForHWP() {
+ 
+ bool MachThread::FinishTransForHWP() { return m_arch_up->FinishTransForHWP(); }
+ 
+-bool MachThread::DisableHardwareBreakpoint(const DNBBreakpoint *bp) {
+-  if (bp != NULL && bp->IsHardware())
+-    return m_arch_up->DisableHardwareBreakpoint(bp->GetHardwareIndex());
++bool MachThread::DisableHardwareBreakpoint(const DNBBreakpoint *bp,
++                                           bool also_set_on_task) {
++  if (bp != NULL && bp->IsHardware()) {
++    return m_arch_up->DisableHardwareBreakpoint(bp->GetHardwareIndex(),
++                                                also_set_on_task);
++  }
+   return false;
+ }
+ 
+diff --git a/lldb/tools/debugserver/source/MacOSX/MachThread.h b/lldb/tools/debugserver/source/MacOSX/MachThread.h
+index 1634522fde4..cbcd94ea576 100644
+--- a/lldb/tools/debugserver/source/MacOSX/MachThread.h
++++ b/lldb/tools/debugserver/source/MacOSX/MachThread.h
+@@ -66,10 +66,12 @@ public:
+   uint64_t GetSP(uint64_t failValue = INVALID_NUB_ADDRESS); // Get stack pointer
+ 
+   DNBBreakpoint *CurrentBreakpoint();
+-  uint32_t EnableHardwareBreakpoint(const DNBBreakpoint *breakpoint);
++  uint32_t EnableHardwareBreakpoint(const DNBBreakpoint *breakpoint,
++                                    bool also_set_on_task);
+   uint32_t EnableHardwareWatchpoint(const DNBBreakpoint *watchpoint,
+                                     bool also_set_on_task);
+-  bool DisableHardwareBreakpoint(const DNBBreakpoint *breakpoint);
++  bool DisableHardwareBreakpoint(const DNBBreakpoint *breakpoint,
++                                 bool also_set_on_task);
+   bool DisableHardwareWatchpoint(const DNBBreakpoint *watchpoint,
+                                  bool also_set_on_task);
+   uint32_t NumSupportedHardwareWatchpoints() const;
+diff --git a/lldb/tools/debugserver/source/MacOSX/MachThreadList.cpp b/lldb/tools/debugserver/source/MacOSX/MachThreadList.cpp
+index 0fa4437843a..21cee460ba6 100644
+--- a/lldb/tools/debugserver/source/MacOSX/MachThreadList.cpp
++++ b/lldb/tools/debugserver/source/MacOSX/MachThreadList.cpp
+@@ -480,19 +480,60 @@ void MachThreadList::NotifyBreakpointChanged(const DNBBreakpoint *bp) {
+ 
+ uint32_t
+ MachThreadList::EnableHardwareBreakpoint(const DNBBreakpoint *bp) const {
++  uint32_t hw_index = INVALID_NUB_HW_INDEX;
+   if (bp != NULL) {
++    PTHREAD_MUTEX_LOCKER(locker, m_threads_mutex);
+     const size_t num_threads = m_threads.size();
+-    for (uint32_t idx = 0; idx < num_threads; ++idx)
+-      m_threads[idx]->EnableHardwareBreakpoint(bp);
++    // On Mac OS X we have to prime the control registers for new threads.  We
++    // do this
++    // using the control register data for the first thread, for lack of a
++    // better way of choosing.
++    bool also_set_on_task = true;
++    for (uint32_t idx = 0; idx < num_threads; ++idx) {
++      if ((hw_index = m_threads[idx]->EnableHardwareBreakpoint(
++               bp, also_set_on_task)) == INVALID_NUB_HW_INDEX) {
++        // We know that idx failed for some reason.  Let's rollback the
++        // transaction for [0, idx).
++        for (uint32_t i = 0; i < idx; ++i) {
++          m_threads[i]->RollbackTransForHWP();
++        }
++        return INVALID_NUB_HW_INDEX;
++      }
++      also_set_on_task = false;
++    }
++    // Notify each thread to commit the pending transaction.
++    for (uint32_t idx = 0; idx < num_threads; ++idx) {
++      m_threads[idx]->FinishTransForHWP();
++    }
+   }
+-  return INVALID_NUB_HW_INDEX;
++  return hw_index;
+ }
+ 
+ bool MachThreadList::DisableHardwareBreakpoint(const DNBBreakpoint *bp) const {
+   if (bp != NULL) {
++    PTHREAD_MUTEX_LOCKER(locker, m_threads_mutex);
+     const size_t num_threads = m_threads.size();
++
++    // On Mac OS X we have to prime the control registers for new threads.  We
++    // do this
++    // using the control register data for the first thread, for lack of a
++    // better way of choosing.
++    bool also_set_on_task = true;
++    for (uint32_t idx = 0; idx < num_threads; ++idx) {
++      if (!m_threads[idx]->DisableHardwareBreakpoint(bp, also_set_on_task)) {
++        // We know that idx failed for some reason.  Let's rollback the
++        // transaction for [0, idx).
++        for (uint32_t i = 0; i < idx; ++i)
++          m_threads[i]->RollbackTransForHWP();
++        return false;
++      }
++      also_set_on_task = false;
++    }
++    // Notify each thread to commit the pending transaction.
+     for (uint32_t idx = 0; idx < num_threads; ++idx)
+-      m_threads[idx]->DisableHardwareBreakpoint(bp);
++      m_threads[idx]->FinishTransForHWP();
++
++    return true;
+   }
+   return false;
+ }
+diff --git a/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.cpp b/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.cpp
+index 45d05d6e0bd..90cc25650e3 100644
+--- a/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.cpp
++++ b/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.cpp
+@@ -980,7 +980,8 @@ uint32_t DNBArchMachARM::NumSupportedHardwareWatchpoints() {
+ }
+ 
+ uint32_t DNBArchMachARM::EnableHardwareBreakpoint(nub_addr_t addr,
+-                                                  nub_size_t size) {
++                                                  nub_size_t size,
++                                                  bool also_set_on_task) {
+   // Make sure our address isn't bogus
+   if (addr & 1)
+     return INVALID_NUB_HW_INDEX;
+@@ -1052,7 +1053,8 @@ uint32_t DNBArchMachARM::EnableHardwareBreakpoint(nub_addr_t addr,
+   return INVALID_NUB_HW_INDEX;
+ }
+ 
+-bool DNBArchMachARM::DisableHardwareBreakpoint(uint32_t hw_index) {
++bool DNBArchMachARM::DisableHardwareBreakpoint(uint32_t hw_index,
++                                               bool also_set_on_task) {
+   kern_return_t kret = GetDBGState(false);
+ 
+   const uint32_t num_hw_points = NumSupportedHardwareBreakpoints();
+diff --git a/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.h b/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.h
+index 4bb899b4503..4c27a342f9f 100644
+--- a/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.h
++++ b/lldb/tools/debugserver/source/MacOSX/arm/DNBArchImpl.h
+@@ -70,8 +70,10 @@ public:
+ 
+   virtual uint32_t NumSupportedHardwareBreakpoints();
+   virtual uint32_t NumSupportedHardwareWatchpoints();
+-  virtual uint32_t EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size);
+-  virtual bool DisableHardwareBreakpoint(uint32_t hw_break_index);
++  virtual uint32_t EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size,
++                                            bool also_set_on_task);
++  virtual bool DisableHardwareBreakpoint(uint32_t hw_break_index,
++                                         bool also_set_on_task);
+ 
+   virtual uint32_t EnableHardwareWatchpoint(nub_addr_t addr, nub_size_t size,
+                                             bool read, bool write,
+diff --git a/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp b/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp
+index 7d2d0c2ef1b..b17c040facd 100644
+--- a/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp
++++ b/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp
+@@ -718,6 +718,11 @@ bool DNBArchImplI386::NotifyException(MachException::Data &exc) {
+   return false;
+ }
+ 
++uint32_t DNBArchImplI386::NumSupportedHardwareBreakpoints() {
++  // Available debug address registers: dr0, dr1, dr2, dr3.
++  return 4;
++}
++
+ uint32_t DNBArchImplI386::NumSupportedHardwareWatchpoints() {
+   // Available debug address registers: dr0, dr1, dr2, dr3.
+   return 4;
+@@ -797,6 +802,148 @@ void DNBArchImplI386::SetWatchpoint(DBG &debug_state, uint32_t hw_index,
+   return;
+ }
+ 
++void DNBArchImplI386::SetHardwareBreakpoint(DBG &debug_state, uint32_t hw_index,
++                                            nub_addr_t addr, nub_size_t size) {
++  // Set both dr7 (debug control register) and dri (debug address register).
++
++  // dr7{7-0} encodes the local/gloabl enable bits:
++  //  global enable --. .-- local enable
++  //                  | |
++  //                  v v
++  //      dr0 -> bits{1-0}
++  //      dr1 -> bits{3-2}
++  //      dr2 -> bits{5-4}
++  //      dr3 -> bits{7-6}
++  //
++  // dr7{31-16} encodes the rw/len bits:
++  //  b_x+3, b_x+2, b_x+1, b_x
++  //      where bits{x+1, x} => rw
++  //            0b00: execute, 0b01: write, 0b11: read-or-write, 0b10: io
++  //            read-or-write (unused)
++  //      and bits{x+3, x+2} => len
++  //            0b00: 1-byte, 0b01: 2-byte, 0b11: 4-byte, 0b10: 8-byte
++  //
++  //      dr0 -> bits{19-16}
++  //      dr1 -> bits{23-20}
++  //      dr2 -> bits{27-24}
++  //      dr3 -> bits{31-28}
++  debug_state.__dr7 |=
++      (1 << (2 * hw_index) | 0 << (16 + 4 * hw_index));
++  uint32_t addr_32 = addr & 0xffffffff;
++  switch (hw_index) {
++  case 0:
++    debug_state.__dr0 = addr_32;
++    break;
++  case 1:
++    debug_state.__dr1 = addr_32;
++    break;
++  case 2:
++    debug_state.__dr2 = addr_32;
++    break;
++  case 3:
++    debug_state.__dr3 = addr_32;
++    break;
++  default:
++    assert(0 &&
++           "invalid hardware register index, must be one of 0, 1, 2, or 3");
++  }
++  return;
++}
++
++uint32_t DNBArchImplI386::EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size,
++                                  bool also_set_on_task) {
++  DNBLogThreadedIf(LOG_BREAKPOINTS,
++                  "DNBArchImplI386::EnableHardwareBreakpoint( addr = "
++                  "0x%8.8llx, size = %llu )",
++                  (uint64_t)addr, (uint64_t)size);
++
++  const uint32_t num_hw_breakpoints = NumSupportedHardwareBreakpoints();
++  // Read the debug state
++  kern_return_t kret = GetDBGState(false);
++
++  if (kret != KERN_SUCCESS) {
++    return INVALID_NUB_HW_INDEX;
++  }
++
++  // Check to make sure we have the needed hardware support
++  uint32_t i = 0;
++
++  DBG &debug_state = m_state.context.dbg;
++  for (i = 0; i < num_hw_breakpoints; ++i) {
++    if (IsWatchpointVacant(debug_state, i)) {
++      break;
++    }
++  }
++
++  // See if we found an available hw breakpoint slot above
++  if (i < num_hw_breakpoints) {
++    DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchImplI386::EnableHardwareBreakpoint( free slot = %u )",
++      i);
++
++    StartTransForHWP();
++
++    // Modify our local copy of the debug state, first.
++    SetHardwareBreakpoint(debug_state, i, addr, size);
++    // Now set the watch point in the inferior.
++    kret = SetDBGState(also_set_on_task);
++
++    DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchImplI386::"
++      "EnableHardwareBreakpoint() "
++      "SetDBGState() => 0x%8.8x.",
++      kret);
++
++    if (kret == KERN_SUCCESS) {
++      DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchImplI386::EnableHardwareBreakpoint( enabled at slot = %u)",
++        i);
++      return i;
++    }
++    // Revert to the previous debug state voluntarily.  The transaction
++    // coordinator knows that we have failed.
++    else { 
++        m_state.context.dbg = GetDBGCheckpoint();
++    }
++  } 
++  else {
++      DNBLogThreadedIf(LOG_BREAKPOINTS,
++       "DNBArchImplI386::EnableHardwareBreakpoint(addr = "
++       "0x%8.8llx, size = %llu) => all hardware breakpoint "
++       "resources are being used.",
++       (uint64_t)addr, (uint64_t)size);
++  }
++
++  return INVALID_NUB_HW_INDEX;
++}
++
++bool DNBArchImplI386::DisableHardwareBreakpoint(uint32_t hw_index,
++                               bool also_set_on_task) {
++  kern_return_t kret = GetDBGState(false);
++
++  const uint32_t num_hw_points = NumSupportedHardwareBreakpoints();
++  if (kret == KERN_SUCCESS) {
++    DBG &debug_state = m_state.context.dbg;
++    if (hw_index < num_hw_points &&
++        !IsWatchpointVacant(debug_state, hw_index)) {
++      
++      StartTransForHWP();
++
++      // Modify our local copy of the debug state, first.
++      ClearWatchpoint(debug_state, hw_index);
++      // Now disable the watch point in the inferior.
++      kret = SetDBGState(true);
++      DNBLogThreadedIf(LOG_WATCHPOINTS,
++                       "DNBArchImplI386::DisableHardwareBreakpoint( %u )",
++                       hw_index);
++
++      if (kret == KERN_SUCCESS)
++        return true;
++      else // Revert to the previous debug state voluntarily.  The transaction
++           // coordinator knows that we have failed.
++        m_state.context.dbg = GetDBGCheckpoint();
++    }
++  }
++  return false;
++}
++
+ void DNBArchImplI386::ClearWatchpoint(DBG &debug_state, uint32_t hw_index) {
+   debug_state.__dr7 &= ~(3 << (2 * hw_index));
+   switch (hw_index) {
+diff --git a/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h b/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h
+index 12b515a2957..ea63140722b 100644
+--- a/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h
++++ b/lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h
+@@ -51,7 +51,12 @@ public:
+   virtual bool ThreadDidStop();
+   virtual bool NotifyException(MachException::Data &exc);
+ 
++  virtual uint32_t NumSupportedHardwareBreakpoints();
+   virtual uint32_t NumSupportedHardwareWatchpoints();
++  virtual uint32_t EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size,
++                                            bool also_set_on_task);
++  virtual bool DisableHardwareBreakpoint(uint32_t hw_index,
++                                         bool also_set_on_task);
+   virtual uint32_t EnableHardwareWatchpoint(nub_addr_t addr, nub_size_t size,
+                                             bool read, bool write,
+                                             bool also_set_on_task);
+@@ -210,6 +215,9 @@ protected:
+ 
+   static uint32_t GetRegisterContextSize();
+ 
++  static void SetHardwareBreakpoint(DBG &debug_state, uint32_t hw_index,
++                            nub_addr_t addr, nub_size_t size);
++
+   // Helper functions for watchpoint manipulations.
+   static void SetWatchpoint(DBG &debug_state, uint32_t hw_index,
+                             nub_addr_t addr, nub_size_t size, bool read,
+diff --git a/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp b/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp
+index 319215e8a7f..0233ce3f592 100644
+--- a/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp
++++ b/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp
+@@ -679,6 +679,12 @@ uint32_t DNBArchImplX86_64::NumSupportedHardwareWatchpoints() {
+   return 4;
+ }
+ 
++uint32_t DNBArchImplX86_64::NumSupportedHardwareBreakpoints() {
++  DNBLogThreadedIf(LOG_BREAKPOINTS,
++                  "DNBArchImplX86_64::NumSupportedHardwareBreakpoints");
++  return 4;
++}
++
+ static uint32_t size_and_rw_bits(nub_size_t size, bool read, bool write) {
+   uint32_t rw;
+   if (read) {
+@@ -853,6 +859,149 @@ DNBArchImplX86_64::DBG DNBArchImplX86_64::GetDBGCheckpoint() {
+   return m_2pc_dbg_checkpoint;
+ }
+ 
++void DNBArchImplX86_64::SetHardwareBreakpoint(DBG &debug_state, uint32_t hw_index,
++                                      nub_addr_t addr, nub_size_t size) {
++  // Set both dr7 (debug control register) and dri (debug address register).
++
++  // dr7{7-0} encodes the local/gloabl enable bits:
++  //  global enable --. .-- local enable
++  //                  | |
++  //                  v v
++  //      dr0 -> bits{1-0}
++  //      dr1 -> bits{3-2}
++  //      dr2 -> bits{5-4}
++  //      dr3 -> bits{7-6}
++  //
++  // dr7{31-16} encodes the rw/len bits:
++  //  b_x+3, b_x+2, b_x+1, b_x
++  //      where bits{x+1, x} => rw
++  //            0b00: execute, 0b01: write, 0b11: read-or-write, 0b10: io
++  //            read-or-write (unused)
++  //      and bits{x+3, x+2} => len
++  //            0b00: 1-byte, 0b01: 2-byte, 0b11: 4-byte, 0b10: 8-byte
++  //
++  //      dr0 -> bits{19-16}
++  //      dr1 -> bits{23-20}
++  //      dr2 -> bits{27-24}
++  //      dr3 -> bits{31-28}
++  debug_state.__dr7 |=
++      (1 << (2 * hw_index) | 0 << (16 + 4 * hw_index));
++
++  switch (hw_index) {
++  case 0:
++    debug_state.__dr0 = addr;
++    break;
++  case 1:
++    debug_state.__dr1 = addr;
++    break;
++  case 2:
++    debug_state.__dr2 = addr;
++    break;
++  case 3:
++    debug_state.__dr3 = addr;
++    break;
++  default:
++    assert(0 &&
++           "invalid hardware register index, must be one of 0, 1, 2, or 3");
++  }
++  return;
++}
++
++uint32_t DNBArchImplX86_64::EnableHardwareBreakpoint(nub_addr_t addr,
++                                                     nub_size_t size, 
++                                                     bool also_set_on_task) {
++  DNBLogThreadedIf(LOG_BREAKPOINTS,
++                  "DNBArchImplX86_64::EnableHardwareBreakpoint( addr = "
++                  "0x%8.8llx, size = %llu )",
++                  (uint64_t)addr, (uint64_t)size);
++
++  const uint32_t num_hw_breakpoints = NumSupportedHardwareBreakpoints();
++  // Read the debug state
++  kern_return_t kret = GetDBGState(false);
++
++  if (kret != KERN_SUCCESS) {
++    return INVALID_NUB_HW_INDEX;
++  }
++
++  // Check to make sure we have the needed hardware support
++  uint32_t i = 0;
++
++  DBG &debug_state = m_state.context.dbg;
++  for (i = 0; i < num_hw_breakpoints; ++i) {
++    if (IsWatchpointVacant(debug_state, i)) {
++      break;
++    }
++  }
++
++  // See if we found an available hw breakpoint slot above
++  if (i < num_hw_breakpoints) {
++    DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchImplX86_64::EnableHardwareBreakpoint( free slot = %u )",
++      i);
++
++    StartTransForHWP();
++
++    // Modify our local copy of the debug state, first.
++    SetHardwareBreakpoint(debug_state, i, addr, size);
++    // Now set the watch point in the inferior.
++    kret = SetDBGState(also_set_on_task);
++
++    DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchImplX86_64::"
++      "EnableHardwareBreakpoint() "
++      "SetDBGState() => 0x%8.8x.",
++      kret);
++
++    if (kret == KERN_SUCCESS) {
++      DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchImplX86_64::EnableHardwareBreakpoint( enabled at slot = %u)",
++        i);
++      return i;
++    }
++    // Revert to the previous debug state voluntarily.  The transaction
++    // coordinator knows that we have failed.
++    else { 
++        m_state.context.dbg = GetDBGCheckpoint();
++    }
++  } 
++  else {
++      DNBLogThreadedIf(LOG_BREAKPOINTS,
++       "DNBArchImplX86_64::EnableHardwareBreakpoint(addr = "
++       "0x%8.8llx, size = %llu) => all hardware breakpoint "
++       "resources are being used.",
++       (uint64_t)addr, (uint64_t)size);
++  }
++
++  return INVALID_NUB_HW_INDEX;
++}
++
++bool DNBArchImplX86_64::DisableHardwareBreakpoint(uint32_t hw_index,
++                                                  bool also_set_on_task) {
++  kern_return_t kret = GetDBGState(false);
++
++  const uint32_t num_hw_points = NumSupportedHardwareBreakpoints();
++  if (kret == KERN_SUCCESS) {
++    DBG &debug_state = m_state.context.dbg;
++    if (hw_index < num_hw_points &&
++        !IsWatchpointVacant(debug_state, hw_index)) {
++      
++      StartTransForHWP();
++
++      // Modify our local copy of the debug state, first.
++      ClearWatchpoint(debug_state, hw_index);
++      // Now disable the watch point in the inferior.
++      kret = SetDBGState(true);
++      DNBLogThreadedIf(LOG_WATCHPOINTS,
++                       "DNBArchImplX86_64::DisableHardwareBreakpoint( %u )",
++                       hw_index);
++
++      if (kret == KERN_SUCCESS)
++        return true;
++      else // Revert to the previous debug state voluntarily.  The transaction
++           // coordinator knows that we have failed.
++        m_state.context.dbg = GetDBGCheckpoint();
++    }
++  }
++  return false;
++}
++
+ uint32_t DNBArchImplX86_64::EnableHardwareWatchpoint(nub_addr_t addr,
+                                                      nub_size_t size, bool read,
+                                                      bool write,
+diff --git a/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h b/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h
+index 62ce37d4c04..e59337d405f 100644
+--- a/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h
++++ b/lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h
+@@ -50,7 +50,13 @@ public:
+   virtual bool ThreadDidStop();
+   virtual bool NotifyException(MachException::Data &exc);
+ 
++  virtual uint32_t NumSupportedHardwareBreakpoints();
+   virtual uint32_t NumSupportedHardwareWatchpoints();
++
++  virtual uint32_t EnableHardwareBreakpoint(nub_addr_t addr, nub_size_t size,
++                                            bool also_set_on_task);
++  virtual bool DisableHardwareBreakpoint(uint32_t hw_break_index,
++                                         bool also_set_on_task);
+   virtual uint32_t EnableHardwareWatchpoint(nub_addr_t addr, nub_size_t size,
+                                             bool read, bool write,
+                                             bool also_set_on_task);
+@@ -213,6 +219,10 @@ protected:
+ 
+   static uint32_t GetRegisterContextSize();
+ 
++
++  static void SetHardwareBreakpoint(DBG &debug_state, uint32_t hw_index,
++                            nub_addr_t addr, nub_size_t size);
++
+   // Helper functions for watchpoint manipulations.
+   static void SetWatchpoint(DBG &debug_state, uint32_t hw_index,
+                             nub_addr_t addr, nub_size_t size, bool read,
+diff --git a/lldb/tools/debugserver/source/RNBRemote.cpp b/lldb/tools/debugserver/source/RNBRemote.cpp
+index 3a4035b0b9b..11a07f22098 100644
+--- a/lldb/tools/debugserver/source/RNBRemote.cpp
++++ b/lldb/tools/debugserver/source/RNBRemote.cpp
+@@ -279,12 +279,10 @@ void RNBRemote::CreatePacketTable() {
+                      "x", "Read data from memory"));
+   t.push_back(Packet(write_data_to_memory, &RNBRemote::HandlePacket_X, NULL,
+                      "X", "Write data to memory"));
+-  //  t.push_back (Packet (insert_hardware_bp,
+-  //  &RNBRemote::HandlePacket_UNIMPLEMENTED, NULL, "Z1", "Insert hardware
+-  //  breakpoint"));
+-  //  t.push_back (Packet (remove_hardware_bp,
+-  //  &RNBRemote::HandlePacket_UNIMPLEMENTED, NULL, "z1", "Remove hardware
+-  //  breakpoint"));
++  t.push_back (Packet(insert_hardware_bp, &RNBRemote::HandlePacket_z, NULL, 
++                     "Z1", "Insert hardware breakpoint"));
++  t.push_back (Packet(remove_hardware_bp, &RNBRemote::HandlePacket_z, NULL, 
++                     "z1", "Remove hardware breakpoint"));
+   t.push_back(Packet(insert_write_watch_bp, &RNBRemote::HandlePacket_z, NULL,
+                      "Z2", "Insert write watchpoint"));
+   t.push_back(Packet(remove_write_watch_bp, &RNBRemote::HandlePacket_z, NULL,
