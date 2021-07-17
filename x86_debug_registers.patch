@@ -1,0 +1,359 @@
+diff --git lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp
+index 2b1d360dc..02bfb8eb7 100644
+--- lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp
++++ lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.cpp
+@@ -166,6 +166,18 @@ enum {
+   k_num_exc_regs,
+ };
+ 
++enum {
++  dbg_dr0,
++  dbg_dr1,
++  dbg_dr2,
++  dbg_dr3,
++  dbg_dr4,
++  dbg_dr5,
++  dbg_dr6,
++  dbg_dr7,
++  k_num_dbg_regs,
++};
++
+ enum {
+   ehframe_eax = 0,
+   ehframe_ecx,
+@@ -1209,7 +1221,9 @@ kern_return_t DNBArchImplI386::EnableHardwareSingleStep(bool enable) {
+ #define EXC_OFFSET(reg)                                                        \
+   (offsetof(DNBArchImplI386::EXC, __##reg) +                                   \
+    offsetof(DNBArchImplI386::Context, exc))
+-
++#define DBG_OFFSET(reg)                                                        \
++  (offsetof(DNBArchImplI386::DBG, __##reg) +                                 \
++   offsetof(DNBArchImplI386::Context, exc))
+ #define GPR_SIZE(reg) (sizeof(((DNBArchImplI386::GPR *)NULL)->__##reg))
+ #define FPU_SIZE_UINT(reg) (sizeof(((DNBArchImplI386::FPU *)NULL)->__fpu_##reg))
+ #define FPU_SIZE_MMST(reg)                                                     \
+@@ -1219,6 +1233,7 @@ kern_return_t DNBArchImplI386::EnableHardwareSingleStep(bool enable) {
+ #define FPU_SIZE_YMM(reg) (32)
+ #define FPU_SIZE_ZMM(reg) (64)
+ #define EXC_SIZE(reg) (sizeof(((DNBArchImplI386::EXC *)NULL)->__##reg))
++#define DBG_SIZE(reg) (sizeof(((DNBArchImplI386::DBG *)NULL)->__##reg))
+ 
+ // This does not accurately identify the location of ymm0...7 in
+ // Context.fpu.avx.  That is because there is a bunch of padding
+@@ -1670,6 +1685,25 @@ const DNBRegisterInfo DNBArchImplI386::g_exc_registers[] = {
+      EXC_SIZE(faultvaddr), EXC_OFFSET(faultvaddr), INVALID_NUB_REGNUM,
+      INVALID_NUB_REGNUM, INVALID_NUB_REGNUM, INVALID_NUB_REGNUM, NULL, NULL}};
+ 
++// Debug registers
++const DNBRegisterInfo DNBArchImplI386::g_dbg_registers[] = {
++    {e_regSetDBG, dbg_dr0, "dr0", NULL, Uint, Hex, DBG_SIZE(dr0),
++     DBG_OFFSET(dr0), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr1, "dr1", NULL, Uint, Hex, DBG_SIZE(dr1),
++     DBG_OFFSET(dr1), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr2, "dr2", NULL, Uint, Hex, DBG_SIZE(dr2),
++     DBG_OFFSET(dr2), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr3, "dr3", NULL, Uint, Hex, DBG_SIZE(dr3),
++     DBG_OFFSET(dr3), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr4, "dr4", NULL, Uint, Hex, DBG_SIZE(dr4),
++     DBG_OFFSET(dr4), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr5, "dr5", NULL, Uint, Hex, DBG_SIZE(dr5),
++     DBG_OFFSET(dr5), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr6, "dr6", NULL, Uint, Hex, DBG_SIZE(dr6),
++     DBG_OFFSET(dr6), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr7, "dr7", NULL, Uint, Hex, DBG_SIZE(dr7),
++     DBG_OFFSET(dr7), -1U, -1U, -1U, -1U, NULL, NULL}};
++
+ // Number of registers in each register set
+ const size_t DNBArchImplI386::k_num_gpr_registers =
+     sizeof(g_gpr_registers) / sizeof(DNBRegisterInfo);
+@@ -1681,12 +1715,17 @@ const size_t DNBArchImplI386::k_num_fpu_registers_avx512f =
+     sizeof(g_fpu_registers_avx512f) / sizeof(DNBRegisterInfo);
+ const size_t DNBArchImplI386::k_num_exc_registers =
+     sizeof(g_exc_registers) / sizeof(DNBRegisterInfo);
++const size_t DNBArchImplI386::k_num_dbg_registers = 
++    sizeof(g_dbg_registers) / sizeof(DNBRegisterInfo);
+ const size_t DNBArchImplI386::k_num_all_registers_no_avx =
+-    k_num_gpr_registers + k_num_fpu_registers_no_avx + k_num_exc_registers;
++    k_num_gpr_registers + k_num_fpu_registers_no_avx + k_num_exc_registers +
++    k_num_dbg_registers;
+ const size_t DNBArchImplI386::k_num_all_registers_avx =
+-    k_num_gpr_registers + k_num_fpu_registers_avx + k_num_exc_registers;
++    k_num_gpr_registers + k_num_fpu_registers_avx + k_num_exc_registers +
++    k_num_dbg_registers;
+ const size_t DNBArchImplI386::k_num_all_registers_avx512f =
+-    k_num_gpr_registers + k_num_fpu_registers_avx512f + k_num_exc_registers;
++    k_num_gpr_registers + k_num_fpu_registers_avx512f + k_num_exc_registers +
++    k_num_dbg_registers;
+ 
+ // Register set definitions. The first definitions at register set index
+ // of zero is for all registers, followed by other registers sets. The
+@@ -1696,20 +1735,23 @@ const DNBRegisterSetInfo DNBArchImplI386::g_reg_sets_no_avx[] = {
+     {"General Purpose Registers", g_gpr_registers, k_num_gpr_registers},
+     {"Floating Point Registers", g_fpu_registers_no_avx,
+      k_num_fpu_registers_no_avx},
+-    {"Exception State Registers", g_exc_registers, k_num_exc_registers}};
++    {"Exception State Registers", g_exc_registers, k_num_exc_registers},
++    {"Debug Registers", g_dbg_registers, k_num_dbg_registers}};
+ 
+ const DNBRegisterSetInfo DNBArchImplI386::g_reg_sets_avx[] = {
+     {"i386 Registers", NULL, k_num_all_registers_avx},
+     {"General Purpose Registers", g_gpr_registers, k_num_gpr_registers},
+     {"Floating Point Registers", g_fpu_registers_avx, k_num_fpu_registers_avx},
+-    {"Exception State Registers", g_exc_registers, k_num_exc_registers}};
++    {"Exception State Registers", g_exc_registers, k_num_exc_registers},
++    {"Debug Registers", g_dbg_registers, k_num_dbg_registers}};
+ 
+ const DNBRegisterSetInfo DNBArchImplI386::g_reg_sets_avx512f[] = {
+     {"i386 Registers", NULL, k_num_all_registers_avx512f},
+     {"General Purpose Registers", g_gpr_registers, k_num_gpr_registers},
+     {"Floating Point Registers", g_fpu_registers_avx512f,
+     k_num_fpu_registers_avx512f},
+-    {"Exception State Registers", g_exc_registers, k_num_exc_registers}};
++    {"Exception State Registers", g_exc_registers, k_num_exc_registers},
++    {"Debug Registers", g_dbg_registers, k_num_dbg_registers}};
+ 
+ // Total number of register sets for this architecture
+ const size_t DNBArchImplI386::k_num_register_sets =
+@@ -1963,6 +2005,12 @@ bool DNBArchImplI386::GetRegisterValue(uint32_t set, uint32_t reg,
+         return true;
+       }
+       break;
++    case e_regSetDBG:
++      if (reg < k_num_dbg_registers) {
++        value->value.uint32 = ((uint32_t *)(&m_state.context.dbg))[reg];
++        return true;
++      }
++      break;
+     }
+   }
+   return false;
+@@ -2209,6 +2257,12 @@ bool DNBArchImplI386::SetRegisterValue(uint32_t set, uint32_t reg,
+         success = true;
+       }
+       break;
++    case e_regSetDBG:
++      if (reg < k_num_dbg_registers) {
++        ((uint32_t *)(&m_state.context.dbg))[reg] = value->value.uint32;
++        success = true;
++      }
++      break;
+     }
+   }
+ 
+@@ -2500,6 +2554,8 @@ kern_return_t DNBArchImplI386::GetRegisterState(int set, bool force) {
+     return GetFPUState(force);
+   case e_regSetEXC:
+     return GetEXCState(force);
++  case e_regSetDBG:
++    return GetDBGState(force);
+   default:
+     break;
+   }
+@@ -2518,6 +2574,8 @@ kern_return_t DNBArchImplI386::SetRegisterState(int set) {
+       return SetFPUState();
+     case e_regSetEXC:
+       return SetEXCState();
++    case e_regSetDBG:
++      return SetDBGState(true); // fG! - true or false???
+     default:
+       break;
+     }
+diff --git lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h
+index a702ea52e..946694705 100644
+--- lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h
++++ lldb/tools/debugserver/source/MacOSX/i386/DNBArchImplI386.h
+@@ -77,12 +77,14 @@ protected:
+   static const DNBRegisterInfo g_fpu_registers_no_avx[];
+   static const DNBRegisterInfo g_fpu_registers_avx[];
+   static const DNBRegisterInfo g_exc_registers[];
++  static const DNBRegisterInfo g_dbg_registers[];
+   static const DNBRegisterSetInfo g_reg_sets_no_avx[];
+   static const DNBRegisterSetInfo g_reg_sets_avx[];
+   static const size_t k_num_gpr_registers;
+   static const size_t k_num_fpu_registers_no_avx;
+   static const size_t k_num_fpu_registers_avx;
+   static const size_t k_num_exc_registers;
++  static const size_t k_num_dbg_registers;
+   static const size_t k_num_all_registers_no_avx;
+   static const size_t k_num_all_registers_avx;
+   static const size_t k_num_register_sets;
+diff --git lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp
+index a633ed26f..7d901d3b2 100644
+--- lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp
++++ lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.cpp
+@@ -1322,6 +1322,18 @@ enum {
+   k_num_exc_regs,
+ };
+ 
++enum {
++  dbg_dr0,
++  dbg_dr1,
++  dbg_dr2,
++  dbg_dr3,
++  dbg_dr4,
++  dbg_dr5,
++  dbg_dr6,
++  dbg_dr7,
++  k_num_dbg_regs,
++};
++
+ enum ehframe_dwarf_regnums {
+   ehframe_dwarf_rax = 0,
+   ehframe_dwarf_rdx = 1,
+@@ -1558,6 +1570,9 @@ enum debugserver_regnums {
+ #define EXC_OFFSET(reg)                                                        \
+   (offsetof(DNBArchImplX86_64::EXC, __##reg) +                                 \
+    offsetof(DNBArchImplX86_64::Context, exc))
++#define DBG_OFFSET(reg)                                                        \
++  (offsetof(DNBArchImplX86_64::DBG, __##reg) +                                 \
++   offsetof(DNBArchImplX86_64::Context, exc))
+ #define AVX_OFFSET_YMM(n) (AVX_OFFSET(ymmh0) + (32 * n))
+ #define AVX512F_OFFSET_ZMM(n) (AVX512F_OFFSET(zmmh0) + (64 * n))
+ 
+@@ -1571,6 +1586,7 @@ enum debugserver_regnums {
+ #define FPU_SIZE_YMM(reg) (32)
+ #define FPU_SIZE_ZMM(reg) (64)
+ #define EXC_SIZE(reg) (sizeof(((DNBArchImplX86_64::EXC *)NULL)->__##reg))
++#define DBG_SIZE(reg) (sizeof(((DNBArchImplX86_64::DBG *)NULL)->__##reg))
+ 
+ // These macros will auto define the register name, alt name, register size,
+ // register offset, encoding, format and native register. This ensures that
+@@ -2195,6 +2211,25 @@ const DNBRegisterInfo DNBArchImplX86_64::g_exc_registers[] = {
+      EXC_SIZE(faultvaddr), EXC_OFFSET(faultvaddr), -1U, -1U, -1U, -1U, NULL,
+      NULL}};
+ 
++// Debug registers
++const DNBRegisterInfo DNBArchImplX86_64::g_dbg_registers[] = {
++    {e_regSetDBG, dbg_dr0, "dr0", NULL, Uint, Hex, DBG_SIZE(dr0),
++     DBG_OFFSET(dr0), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr1, "dr1", NULL, Uint, Hex, DBG_SIZE(dr1),
++     DBG_OFFSET(dr1), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr2, "dr2", NULL, Uint, Hex, DBG_SIZE(dr2),
++     DBG_OFFSET(dr2), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr3, "dr3", NULL, Uint, Hex, DBG_SIZE(dr3),
++     DBG_OFFSET(dr3), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr4, "dr4", NULL, Uint, Hex, DBG_SIZE(dr4),
++     DBG_OFFSET(dr4), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr5, "dr5", NULL, Uint, Hex, DBG_SIZE(dr5),
++     DBG_OFFSET(dr5), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr6, "dr6", NULL, Uint, Hex, DBG_SIZE(dr6),
++     DBG_OFFSET(dr6), -1U, -1U, -1U, -1U, NULL, NULL},
++    {e_regSetDBG, dbg_dr7, "dr7", NULL, Uint, Hex, DBG_SIZE(dr7),
++     DBG_OFFSET(dr7), -1U, -1U, -1U, -1U, NULL, NULL}};
++
+ // Number of registers in each register set
+ const size_t DNBArchImplX86_64::k_num_gpr_registers =
+     sizeof(g_gpr_registers) / sizeof(DNBRegisterInfo);
+@@ -2204,14 +2239,19 @@ const size_t DNBArchImplX86_64::k_num_fpu_registers_avx =
+     sizeof(g_fpu_registers_avx) / sizeof(DNBRegisterInfo);
+ const size_t DNBArchImplX86_64::k_num_exc_registers =
+     sizeof(g_exc_registers) / sizeof(DNBRegisterInfo);
++const size_t DNBArchImplX86_64::k_num_dbg_registers = 
++    sizeof(g_dbg_registers) / sizeof(DNBRegisterInfo);
+ const size_t DNBArchImplX86_64::k_num_all_registers_no_avx =
+-    k_num_gpr_registers + k_num_fpu_registers_no_avx + k_num_exc_registers;
++    k_num_gpr_registers + k_num_fpu_registers_no_avx + k_num_exc_registers + 
++    k_num_dbg_registers;
+ const size_t DNBArchImplX86_64::k_num_all_registers_avx =
+-    k_num_gpr_registers + k_num_fpu_registers_avx + k_num_exc_registers;
++    k_num_gpr_registers + k_num_fpu_registers_avx + k_num_exc_registers +
++    k_num_dbg_registers;
+ const size_t DNBArchImplX86_64::k_num_fpu_registers_avx512f =
+     sizeof(g_fpu_registers_avx512f) / sizeof(DNBRegisterInfo);
+ const size_t DNBArchImplX86_64::k_num_all_registers_avx512f =
+-    k_num_gpr_registers + k_num_fpu_registers_avx512f + k_num_exc_registers;
++    k_num_gpr_registers + k_num_fpu_registers_avx512f + k_num_exc_registers +
++    k_num_dbg_registers;
+ 
+ // Register set definitions. The first definitions at register set index
+ // of zero is for all registers, followed by other registers sets. The
+@@ -2221,20 +2261,23 @@ const DNBRegisterSetInfo DNBArchImplX86_64::g_reg_sets_no_avx[] = {
+     {"General Purpose Registers", g_gpr_registers, k_num_gpr_registers},
+     {"Floating Point Registers", g_fpu_registers_no_avx,
+      k_num_fpu_registers_no_avx},
+-    {"Exception State Registers", g_exc_registers, k_num_exc_registers}};
++    {"Exception State Registers", g_exc_registers, k_num_exc_registers},
++    {"Debug Registers", g_dbg_registers, k_num_dbg_registers}};
+ 
+ const DNBRegisterSetInfo DNBArchImplX86_64::g_reg_sets_avx[] = {
+     {"x86_64 Registers", NULL, k_num_all_registers_avx},
+     {"General Purpose Registers", g_gpr_registers, k_num_gpr_registers},
+     {"Floating Point Registers", g_fpu_registers_avx, k_num_fpu_registers_avx},
+-    {"Exception State Registers", g_exc_registers, k_num_exc_registers}};
++    {"Exception State Registers", g_exc_registers, k_num_exc_registers},
++    {"Debug Registers", g_dbg_registers, k_num_dbg_registers}};
+ 
+ const DNBRegisterSetInfo DNBArchImplX86_64::g_reg_sets_avx512f[] = {
+     {"x86_64 Registers", NULL, k_num_all_registers_avx},
+     {"General Purpose Registers", g_gpr_registers, k_num_gpr_registers},
+     {"Floating Point Registers", g_fpu_registers_avx512f,
+      k_num_fpu_registers_avx512f},
+-    {"Exception State Registers", g_exc_registers, k_num_exc_registers}};
++    {"Exception State Registers", g_exc_registers, k_num_exc_registers},
++    {"Debug Registers", g_dbg_registers, k_num_dbg_registers}};
+ 
+ // Total number of register sets for this architecture
+ const size_t DNBArchImplX86_64::k_num_register_sets =
+@@ -2481,6 +2524,12 @@ bool DNBArchImplX86_64::GetRegisterValue(uint32_t set, uint32_t reg,
+         return true;
+       }
+       break;
++    case e_regSetDBG:
++      if (reg < k_num_dbg_registers) {
++        value->value.uint64 = ((uint64_t *)(&m_state.context.dbg))[reg];
++        return true;
++      }
++      break;
+     }
+   }
+   return false;
+@@ -2705,6 +2754,12 @@ bool DNBArchImplX86_64::SetRegisterValue(uint32_t set, uint32_t reg,
+         break;
+       }
+       break;
++    case e_regSetDBG:
++      if (reg < k_num_dbg_registers) {
++        ((uint64_t *)(&m_state.context.dbg))[reg] = value->value.uint64;
++        success = true;
++      }
++      break;
+     }
+   }
+ 
+@@ -3006,6 +3061,8 @@ kern_return_t DNBArchImplX86_64::GetRegisterState(int set, bool force) {
+     return GetFPUState(force);
+   case e_regSetEXC:
+     return GetEXCState(force);
++  case e_regSetDBG:
++    return GetDBGState(force);
+   default:
+     break;
+   }
+@@ -3024,6 +3081,8 @@ kern_return_t DNBArchImplX86_64::SetRegisterState(int set) {
+       return SetFPUState();
+     case e_regSetEXC:
+       return SetEXCState();
++    case e_regSetDBG:
++      return SetDBGState(true); // fG! - true or false???
+     default:
+       break;
+     }
+diff --git lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h
+index 96da02a4c..9cb697b59 100644
+--- lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h
++++ lldb/tools/debugserver/source/MacOSX/x86_64/DNBArchImplX86_64.h
+@@ -77,12 +77,14 @@ protected:
+   static const DNBRegisterInfo g_fpu_registers_no_avx[];
+   static const DNBRegisterInfo g_fpu_registers_avx[];
+   static const DNBRegisterInfo g_exc_registers[];
++  static const DNBRegisterInfo g_dbg_registers[];
+   static const DNBRegisterSetInfo g_reg_sets_no_avx[];
+   static const DNBRegisterSetInfo g_reg_sets_avx[];
+   static const size_t k_num_gpr_registers;
+   static const size_t k_num_fpu_registers_no_avx;
+   static const size_t k_num_fpu_registers_avx;
+   static const size_t k_num_exc_registers;
++  static const size_t k_num_dbg_registers;
+   static const size_t k_num_all_registers_no_avx;
+   static const size_t k_num_all_registers_avx;
+   static const size_t k_num_register_sets;
